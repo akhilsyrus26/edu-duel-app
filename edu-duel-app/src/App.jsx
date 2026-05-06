@@ -115,6 +115,7 @@ export default function EduDuel() {
   const [matchResult, setMatchResult] = useState(null);
   const [matchmakingStep, setMatchmakingStep] = useState(0);
   const [battleId, setBattleId] = useState(null);
+  const [myRole, setMyRole] = useState(null); // 'A' or 'B'
 
   const timerRef = useRef(null);
   const qTimerRef = useRef(null);
@@ -249,8 +250,9 @@ export default function EduDuel() {
         { event: 'UPDATE', schema: 'public', table: 'matchmaking_queue', filter: `username=eq.${user.username}` },
         (payload) => {
           if (payload.new.status === 'matched') {
-            // We were matched! Start with the Battle ID provided
-            fetchOpponentAndStart(payload.new.matched_with, payload.new.battle_id, 'B');
+            // We were matched! We are Player B
+            setMyRole('B');
+            fetchOpponentAndStart(payload.new.matched_with, payload.new.battle_id);
           }
         }
       )
@@ -306,8 +308,9 @@ export default function EduDuel() {
             // Clean up our own queue entry immediately
             await supabase.from('matchmaking_queue').delete().eq('username', user.username);
             
+            setMyRole('A');
             setBattleId(battle.id);
-            setOpponent({ ...opponentData, playerRole: 'A' });
+            setOpponent(opponentData);
             setMatchmakingStep(3);
             setTimeout(() => {
               supabase.removeChannel(channel);
@@ -320,7 +323,7 @@ export default function EduDuel() {
       return false;
     };
 
-    const fetchOpponentAndStart = async (oppUsername, bId, role) => {
+    const fetchOpponentAndStart = async (oppUsername, bId) => {
       const { data: profile } = await supabase
         .from('profiles')
         .select('*')
@@ -328,7 +331,7 @@ export default function EduDuel() {
         .single();
       
       setBattleId(bId);
-      setOpponent({ ...(profile || { username: oppUsername, elo: 400, department: 'Unknown' }), playerRole: role });
+      setOpponent(profile || { username: oppUsername, elo: 400, department: 'Unknown' });
       setMatchmakingStep(3);
       
       // Clean up our own queue entry
@@ -375,23 +378,24 @@ export default function EduDuel() {
 
   // Sync scores in real-time during battle
   useEffect(() => {
-    if (!supabase || !battleId || screen !== "battle") return;
+    if (!supabase || !battleId || screen !== "battle" || !myRole) return;
 
+    console.log(`Subscribing to battle ${battleId} as Player ${myRole}`);
     const channel = supabase
       .channel(`battle-${battleId}`)
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'battles', filter: `id=eq.${battleId}` },
         (payload) => {
-          const isPlayerA = opponent.playerRole === 'B';
-          const oppScoreField = isPlayerA ? 'score_b' : 'score_a';
+          const oppScoreField = myRole === 'A' ? 'score_b' : 'score_a';
+          console.log("Remote update received:", payload.new);
           setOppScore(payload.new[oppScoreField]);
         }
       )
       .subscribe();
 
     return () => supabase.removeChannel(channel);
-  }, [screen, battleId, opponent]);
+  }, [screen, battleId, myRole]);
 
   useEffect(() => {
     if (screen !== "battle") return;
@@ -430,17 +434,21 @@ export default function EduDuel() {
     const q = questions[qIndex];
     const correct = idx === q.answer;
     const speedBonus = qTimeLeft > (SPEED_BONUS_WINDOW + 5 - SPEED_BONUS_WINDOW);
+    const isPlayerA = myRole === 'A';
+    const scoreField = isPlayerA ? 'score_a' : 'score_b';
+    
     if (correct) {
       const pts = 10 + (speedBonus ? 5 : 0);
       const newScore = myScore + pts;
       setMyScore(newScore);
       setFeedback({ type: "correct", bonus: speedBonus, pts });
 
-      // Sync score to Supabase if it's a real PvP battle
+      // Sync score to Supabase
       if (supabase && battleId) {
-        const isPlayerA = opponent.playerRole === 'B'; // We are A if opponent is B
-        const scoreField = isPlayerA ? 'score_a' : 'score_b';
-        supabase.from('battles').update({ [scoreField]: newScore }).eq('id', battleId).then();
+        console.log(`Syncing score for Player ${myRole}: ${newScore}`);
+        supabase.from('battles').update({ [scoreField]: newScore }).eq('id', battleId).then(({error}) => {
+          if (error) console.error("Score sync error:", error);
+        });
       }
     } else {
       setFeedback({ type: "incorrect", bonus: false, pts: 0 });
