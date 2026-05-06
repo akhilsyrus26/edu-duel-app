@@ -203,6 +203,9 @@ export default function EduDuel() {
   };
 
   const startMatchmaking = async () => {
+    // 0. Kill any old timers/channels
+    if (matchmakingRef.current) clearInterval(matchmakingRef.current);
+    
     // Reset state for new match
     setMyScore(0);
     setOppScore(0);
@@ -300,11 +303,8 @@ export default function EduDuel() {
               .update({ status: 'matched', matched_with: user.username, battle_id: battle.id })
               .eq('username', opponentData.username);
 
-            // Then update ourselves
-            await supabase
-              .from('matchmaking_queue')
-              .update({ status: 'matched', matched_with: opponentData.username, battle_id: battle.id })
-              .eq('username', user.username);
+            // Clean up our own queue entry immediately
+            await supabase.from('matchmaking_queue').delete().eq('username', user.username);
             
             setBattleId(battle.id);
             setOpponent({ ...opponentData, playerRole: 'A' });
@@ -330,6 +330,10 @@ export default function EduDuel() {
       setBattleId(bId);
       setOpponent({ ...(profile || { username: oppUsername, elo: 400, department: 'Unknown' }), playerRole: role });
       setMatchmakingStep(3);
+      
+      // Clean up our own queue entry
+      supabase.from('matchmaking_queue').delete().eq('username', user.username).then();
+
       setTimeout(() => {
         supabase.removeChannel(channel);
         startBattle();
