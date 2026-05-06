@@ -204,9 +204,42 @@ export default function EduDuel() {
   const startMatchmaking = async () => {
     setScreen("matchmaking");
     setMatchmakingStep(0);
-    const bot = BOT_NAMES[Math.floor(Math.random()*BOT_NAMES.length)];
-    const botElo = user.elo + Math.floor((Math.random()-0.5)*300);
-    setOpponent({ username: bot, elo: Math.max(100, botElo), department: DEPARTMENTS[Math.floor(Math.random()*DEPARTMENTS.length)] });
+    
+    let targetOpponent = null;
+
+    if (supabase) {
+      try {
+        // Try to find real players close to our Elo
+        const { data: realPlayers, error } = await supabase
+          .from('profiles')
+          .select('*')
+          .neq('username', user.username)
+          .gte('elo', user.elo - 500)
+          .lte('elo', user.elo + 500)
+          .limit(10);
+        
+        if (!error && realPlayers && realPlayers.length > 0) {
+          targetOpponent = realPlayers[Math.floor(Math.random() * realPlayers.length)];
+        }
+      } catch (e) {
+        console.error("Matchmaking error:", e);
+      }
+    }
+
+    // Fallback to bot if no real players are found
+    if (!targetOpponent) {
+      const bot = BOT_NAMES[Math.floor(Math.random()*BOT_NAMES.length)];
+      const botElo = user.elo + Math.floor((Math.random()-0.5)*300);
+      targetOpponent = { 
+        username: bot, 
+        elo: Math.max(100, botElo), 
+        department: DEPARTMENTS[Math.floor(Math.random()*DEPARTMENTS.length)],
+        is_bot: true 
+      };
+    }
+
+    setOpponent(targetOpponent);
+
     let i = 0;
     matchmakingRef.current = setInterval(()=>{
       i++;
