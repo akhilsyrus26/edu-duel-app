@@ -203,8 +203,14 @@ export default function EduDuel() {
   };
 
   const startMatchmaking = async () => {
+    // Reset state for new match
+    setMyScore(0);
+    setOppScore(0);
+    setQIndex(0);
+    setBattleId(null);
+    setMatchResult(null);
+
     if (!supabase) {
-      // Fallback to bot immediately if no DB
       const bot = BOT_NAMES[Math.floor(Math.random()*BOT_NAMES.length)];
       setOpponent({ username: bot, elo: user.elo + 50, department: user.department, is_bot: true });
       setScreen("matchmaking");
@@ -214,7 +220,6 @@ export default function EduDuel() {
 
     setScreen("matchmaking");
     setMatchmakingStep(0);
-    
     // 1. Join the queue
     const { error: joinError } = await supabase
       .from('matchmaking_queue')
@@ -239,8 +244,8 @@ export default function EduDuel() {
         { event: 'UPDATE', schema: 'public', table: 'matchmaking_queue', filter: `username=eq.${user.username}` },
         (payload) => {
           if (payload.new.status === 'matched') {
-            // We were matched by someone else!
-            fetchOpponentAndStart(payload.new.matched_with, 'B');
+            // We were matched! Start with the Battle ID provided
+            fetchOpponentAndStart(payload.new.matched_with, payload.new.battle_id, 'B');
           }
         }
       )
@@ -287,9 +292,16 @@ export default function EduDuel() {
             .single();
 
           if (!battleError) {
+            // Update opponent first so they get the Battle ID
             await supabase
               .from('matchmaking_queue')
-              .update({ status: 'matched', matched_with: opponentData.username })
+              .update({ status: 'matched', matched_with: user.username, battle_id: battle.id })
+              .eq('username', opponentData.username);
+
+            // Then update ourselves
+            await supabase
+              .from('matchmaking_queue')
+              .update({ status: 'matched', matched_with: opponentData.username, battle_id: battle.id })
               .eq('username', user.username);
             
             setBattleId(battle.id);
@@ -306,24 +318,14 @@ export default function EduDuel() {
       return false;
     };
 
-    const fetchOpponentAndStart = async (oppUsername, role) => {
-      // Find the active battle ID
-      const { data: battle } = await supabase
-        .from('battles')
-        .select('id')
-        .or(`player_a.eq.${user.username},player_b.eq.${user.username}`)
-        .eq('status', 'active')
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .single();
-
+    const fetchOpponentAndStart = async (oppUsername, bId, role) => {
       const { data: profile } = await supabase
         .from('profiles')
         .select('*')
         .eq('username', oppUsername)
         .single();
       
-      if (battle) setBattleId(battle.id);
+      setBattleId(bId);
       setOpponent({ ...(profile || { username: oppUsername, elo: 400, department: 'Unknown' }), playerRole: role });
       setMatchmakingStep(3);
       setTimeout(() => {
