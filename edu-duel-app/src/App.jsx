@@ -202,53 +202,141 @@ export default function EduDuel() {
   };
 
   const startMatchmaking = async () => {
+    if (!supabase) {
+      // Fallback to bot immediately if no DB
+      const bot = BOT_NAMES[Math.floor(Math.random()*BOT_NAMES.length)];
+      setOpponent({ username: bot, elo: user.elo + 50, department: user.department, is_bot: true });
+      setScreen("matchmaking");
+      setTimeout(() => startBattle(), 3000);
+      return;
+    }
+
     setScreen("matchmaking");
     setMatchmakingStep(0);
     
-    let targetOpponent = null;
+    // 1. Join the queue
+    const { error: joinError } = await supabase
+      .from('matchmaking_queue')
+      .upsert({ 
+        username: user.username, 
+        elo: user.elo, 
+        department: user.department, 
+        status: 'searching',
+        created_at: new Date().toISOString()
+      });
 
-    if (supabase) {
-      try {
-        // Try to find real players close to our Elo
-        const { data: realPlayers, error } = await supabase
-          .from('profiles')
-          .select('*')
-          .neq('username', user.username)
-          .gte('elo', user.elo - 500)
-          .lte('elo', user.elo + 500)
-          .limit(10);
-        
-        if (!error && realPlayers && realPlayers.length > 0) {
-          targetOpponent = realPlayers[Math.floor(Math.random() * realPlayers.length)];
+    if (joinError) {
+      console.error("Queue error:", joinError);
+      return;
+    }
+
+    // 2. Subscribe to our own queue status
+    const channel = supabase
+      .channel(`match-${user.username}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'matchmaking_queue', filter: `username=eq.${user.username}` },
+        (payload) => {
+          if (payload.new.status === 'matched') {
+            // We were matched by someone else!
+            fetchOpponentAndStart(payload.new.matched_with);
+          }
         }
-      } catch (e) {
-        console.error("Matchmaking error:", e);
+      )
+      .subscribe();
+
+    // 3. Try to find someone else already searching
+    const findMatch = async () => {
+      // Priority 1: Same Department, Close Elo
+      const { data: matches } = await supabase
+        .from('matchmaking_queue')
+        .select('*')
+        .eq('status', 'searching')
+        .neq('username', user.username)
+        .eq('department', user.department)
+        .order('created_at', { ascending: true })
+        .limit(1);
+
+      let opponentData = matches?.[0];
+
+      // Priority 2: Any Department, Close Elo (if no same-dept match)
+      if (!opponentData) {
+        const { data: globalMatches } = await supabase
+          .from('matchmaking_queue')
+          .select('*')
+          .eq('status', 'searching')
+          .neq('username', user.username)
+          .gte('elo', user.elo - 300)
+          .lte('elo', user.elo + 300)
+          .limit(1);
+        opponentData = globalMatches?.[0];
       }
-    }
 
-    // Fallback to bot if no real players are found
-    if (!targetOpponent) {
-      const bot = BOT_NAMES[Math.floor(Math.random()*BOT_NAMES.length)];
-      const botElo = user.elo + Math.floor((Math.random()-0.5)*300);
-      targetOpponent = { 
-        username: bot, 
-        elo: Math.max(100, botElo), 
-        department: DEPARTMENTS[Math.floor(Math.random()*DEPARTMENTS.length)],
-        is_bot: true 
-      };
-    }
+      if (opponentData) {
+        // We found someone! Try to lock the match
+        const { error: lockError } = await supabase
+          .from('matchmaking_queue')
+          .update({ status: 'matched', matched_with: user.username })
+          .eq('username', opponentData.username)
+          .eq('status', 'searching'); // Ensure they are still searching
 
-    setOpponent(targetOpponent);
-
-    let i = 0;
-    matchmakingRef.current = setInterval(()=>{
-      i++;
-      setMatchmakingStep(i);
-      if(i >= 4) {
-        clearInterval(matchmakingRef.current);
-        setTimeout(() => startBattle(), 800);
+        if (!lockError) {
+          // Success! Update our own status too
+          await supabase
+            .from('matchmaking_queue')
+            .update({ status: 'matched', matched_with: opponentData.username })
+            .eq('username', user.username);
+          
+          setOpponent(opponentData);
+          setMatchmakingStep(3);
+          setTimeout(() => {
+            supabase.removeChannel(channel);
+            startBattle();
+          }, 1000);
+          return true;
+        }
       }
-    }, 900);
+      return false;
+    };
+
+    const fetchOpponentAndStart = async (oppUsername) => {
+      const { data } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('username', oppUsername)
+        .single();
+      
+      setOpponent(data || { username: oppUsername, elo: 400, department: 'Unknown' });
+      setMatchmakingStep(3);
+      setTimeout(() => {
+        supabase.removeChannel(channel);
+        startBattle();
+      }, 1000);
+    };
+
+    // 4. Matchmaking Loop & Timeout
+    let attempts = 0;
+    const interval = setInterval(async () => {
+      attempts++;
+      setMatchmakingStep(Math.min(2, Math.floor(attempts / 2)));
+      
+      const found = await findMatch();
+      if (found) {
+        clearInterval(interval);
+      } else if (attempts >= 10) {
+        // Fallback to bot after ~10 seconds
+        clearInterval(interval);
+        supabase.removeChannel(channel);
+        const bot = BOT_NAMES[Math.floor(Math.random()*BOT_NAMES.length)];
+        setOpponent({ username: bot, elo: user.elo + 50, department: user.department, is_bot: true });
+        setMatchmakingStep(3);
+        setTimeout(() => startBattle(), 1000);
+        // Clean up our queue entry
+        await supabase.from('matchmaking_queue').delete().eq('username', user.username);
+      }
+    }, 1000);
+
+    matchmakingRef.current = interval;
   };
 
   const startBattle = async () => {
