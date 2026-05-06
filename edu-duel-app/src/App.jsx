@@ -114,6 +114,7 @@ export default function EduDuel() {
   const [opponent, setOpponent] = useState(null);
   const [matchResult, setMatchResult] = useState(null);
   const [matchmakingStep, setMatchmakingStep] = useState(0);
+  const [battleId, setBattleId] = useState(null);
 
   const timerRef = useRef(null);
   const qTimerRef = useRef(null);
@@ -239,7 +240,7 @@ export default function EduDuel() {
         (payload) => {
           if (payload.new.status === 'matched') {
             // We were matched by someone else!
-            fetchOpponentAndStart(payload.new.matched_with);
+            fetchOpponentAndStart(payload.new.matched_with, 'B');
           }
         }
       )
@@ -247,7 +248,6 @@ export default function EduDuel() {
 
     // 3. Try to find someone else already searching
     const findMatch = async () => {
-      // Priority 1: Same Department, Close Elo
       const { data: matches } = await supabase
         .from('matchmaking_queue')
         .select('*')
@@ -259,7 +259,6 @@ export default function EduDuel() {
 
       let opponentData = matches?.[0];
 
-      // Priority 2: Any Department, Close Elo (if no same-dept match)
       if (!opponentData) {
         const { data: globalMatches } = await supabase
           .from('matchmaking_queue')
@@ -273,40 +272,59 @@ export default function EduDuel() {
       }
 
       if (opponentData) {
-        // We found someone! Try to lock the match
         const { error: lockError } = await supabase
           .from('matchmaking_queue')
           .update({ status: 'matched', matched_with: user.username })
           .eq('username', opponentData.username)
-          .eq('status', 'searching'); // Ensure they are still searching
+          .eq('status', 'searching');
 
         if (!lockError) {
-          // Success! Update our own status too
-          await supabase
-            .from('matchmaking_queue')
-            .update({ status: 'matched', matched_with: opponentData.username })
-            .eq('username', user.username);
-          
-          setOpponent(opponentData);
-          setMatchmakingStep(3);
-          setTimeout(() => {
-            supabase.removeChannel(channel);
-            startBattle();
-          }, 1000);
-          return true;
+          // Initialize the battle session
+          const { data: battle, error: battleError } = await supabase
+            .from('battles')
+            .insert([{ player_a: user.username, player_b: opponentData.username }])
+            .select()
+            .single();
+
+          if (!battleError) {
+            await supabase
+              .from('matchmaking_queue')
+              .update({ status: 'matched', matched_with: opponentData.username })
+              .eq('username', user.username);
+            
+            setBattleId(battle.id);
+            setOpponent({ ...opponentData, playerRole: 'A' });
+            setMatchmakingStep(3);
+            setTimeout(() => {
+              supabase.removeChannel(channel);
+              startBattle();
+            }, 1000);
+            return true;
+          }
         }
       }
       return false;
     };
 
-    const fetchOpponentAndStart = async (oppUsername) => {
-      const { data } = await supabase
+    const fetchOpponentAndStart = async (oppUsername, role) => {
+      // Find the active battle ID
+      const { data: battle } = await supabase
+        .from('battles')
+        .select('id')
+        .or(`player_a.eq.${user.username},player_b.eq.${user.username}`)
+        .eq('status', 'active')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      const { data: profile } = await supabase
         .from('profiles')
         .select('*')
         .eq('username', oppUsername)
         .single();
       
-      setOpponent(data || { username: oppUsername, elo: 400, department: 'Unknown' });
+      if (battle) setBattleId(battle.id);
+      setOpponent({ ...(profile || { username: oppUsername, elo: 400, department: 'Unknown' }), playerRole: role });
       setMatchmakingStep(3);
       setTimeout(() => {
         supabase.removeChannel(channel);
@@ -347,6 +365,26 @@ export default function EduDuel() {
     setScreen("battle");
   };
 
+  // Sync scores in real-time during battle
+  useEffect(() => {
+    if (!supabase || !battleId || screen !== "battle") return;
+
+    const channel = supabase
+      .channel(`battle-${battleId}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'battles', filter: `id=eq.${battleId}` },
+        (payload) => {
+          const isPlayerA = opponent.playerRole === 'B';
+          const oppScoreField = isPlayerA ? 'score_b' : 'score_a';
+          setOppScore(payload.new[oppScoreField]);
+        }
+      )
+      .subscribe();
+
+    return () => supabase.removeChannel(channel);
+  }, [screen, battleId, opponent]);
+
   useEffect(() => {
     if (screen !== "battle") return;
     timerRef.current = setInterval(() => {
@@ -368,7 +406,7 @@ export default function EduDuel() {
   }, [screen, qIndex, selectedOpt]);
 
   useEffect(() => {
-    if (screen !== "battle" || !questions.length) return;
+    if (screen !== "battle" || !questions.length || (opponent && !opponent.is_bot)) return;
     const delay = 4000 + Math.random() * 8000;
     const t = setTimeout(() => {
       const correct = Math.random() > 0.4;
@@ -386,8 +424,16 @@ export default function EduDuel() {
     const speedBonus = qTimeLeft > (SPEED_BONUS_WINDOW + 5 - SPEED_BONUS_WINDOW);
     if (correct) {
       const pts = 10 + (speedBonus ? 5 : 0);
-      setMyScore(s => s + pts);
+      const newScore = myScore + pts;
+      setMyScore(newScore);
       setFeedback({ type: "correct", bonus: speedBonus, pts });
+
+      // Sync score to Supabase if it's a real PvP battle
+      if (supabase && battleId) {
+        const isPlayerA = opponent.playerRole === 'B'; // We are A if opponent is B
+        const scoreField = isPlayerA ? 'score_a' : 'score_b';
+        supabase.from('battles').update({ [scoreField]: newScore }).eq('id', battleId).then();
+      }
     } else {
       setFeedback({ type: "incorrect", bonus: false, pts: 0 });
     }
