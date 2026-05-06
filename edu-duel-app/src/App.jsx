@@ -228,6 +228,8 @@ export default function EduDuel() {
         elo: user.elo, 
         department: user.department, 
         status: 'searching',
+        matched_with: null,
+        battle_id: null,
         created_at: new Date().toISOString()
       });
 
