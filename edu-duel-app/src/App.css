@@ -50,14 +50,13 @@ body { background: var(--bg); font-family: 'Rajdhani', sans-serif; color: var(--
 }
 
 .logo {
-  font-family: 'Orbitron', monospace;
+  font-family: 'Orbitron', sans-serif;
   font-weight: 900;
   font-size: clamp(2.5rem, 6vw, 4rem);
   letter-spacing: 0.1em;
   background: linear-gradient(135deg, var(--accent), var(--accent3));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
-  text-shadow: none;
   margin-bottom: 4px;
   animation: glowPulse 3s ease-in-out infinite;
 }
