@@ -376,23 +376,25 @@ export default function EduDuel() {
     setScreen("battle");
   };
 
-  // Sync scores in real-time during battle
+  // Sync scores in real-time during battle using Broadcast
   useEffect(() => {
     if (!supabase || !battleId || screen !== "battle" || !myRole) return;
 
-    console.log(`Subscribing to battle ${battleId} as Player ${myRole}`);
-    const channel = supabase
-      .channel(`battle-${battleId}`)
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'battles', filter: `id=eq.${battleId}` },
-        (payload) => {
-          const oppScoreField = myRole === 'A' ? 'score_b' : 'score_a';
-          console.log("Remote update received:", payload.new);
-          setOppScore(payload.new[oppScoreField]);
+    console.log(`Joining broadcast channel battle-${battleId} as Player ${myRole}`);
+    const channel = supabase.channel(`battle-${battleId}`, {
+      config: { broadcast: { self: false } }
+    });
+
+    channel
+      .on('broadcast', { event: 'score_update' }, (payload) => {
+        console.log("Broadcast received:", payload);
+        if (payload.payload.role !== myRole) {
+          setOppScore(payload.payload.score);
         }
-      )
-      .subscribe();
+      })
+      .subscribe((status) => {
+        console.log("Broadcast status:", status);
+      });
 
     return () => supabase.removeChannel(channel);
   }, [screen, battleId, myRole]);
@@ -443,12 +445,17 @@ export default function EduDuel() {
       setMyScore(newScore);
       setFeedback({ type: "correct", bonus: speedBonus, pts });
 
-      // Sync score to Supabase
+      // Sync score via Real-time Broadcast (Fastest)
       if (supabase && battleId) {
-        console.log(`Syncing score for Player ${myRole}: ${newScore}`);
-        supabase.from('battles').update({ [scoreField]: newScore }).eq('id', battleId).then(({error}) => {
-          if (error) console.error("Score sync error:", error);
+        console.log(`Broadcasting score for Player ${myRole}: ${newScore}`);
+        supabase.channel(`battle-${battleId}`).send({
+          type: 'broadcast',
+          event: 'score_update',
+          payload: { role: myRole, score: newScore }
         });
+        
+        // Also update DB for persistence (in background)
+        supabase.from('battles').update({ [scoreField]: newScore }).eq('id', battleId).then();
       }
     } else {
       setFeedback({ type: "incorrect", bonus: false, pts: 0 });
