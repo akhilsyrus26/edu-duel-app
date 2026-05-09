@@ -69,6 +69,52 @@ export default function EduDuel() {
   const [user, setUser] = useState(null);
   const [leaderboard, setLeaderboard] = useState(INIT_LEADERBOARD);
 
+  // Track online presence
+  useEffect(() => {
+    if (!supabase || !user) return;
+
+    const channel = supabase.channel('online-combatants', {
+      config: { presence: { key: user.username } }
+    });
+
+    channel
+      .on('presence', { event: 'sync' }, () => {
+        const state = channel.presenceState();
+        const simplified = {};
+        for (const key in state) {
+          simplified[key] = state[key][0];
+        }
+        setOnlineUsers(simplified);
+      })
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          await channel.track({
+            username: user.username,
+            department: user.department,
+            elo: user.elo,
+            status: 'idle',
+            online_at: new Date().toISOString()
+          });
+        }
+      });
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user]);
+
+  const updatePresence = useCallback(async (status) => {
+    if (!supabase || !user) return;
+    const channel = supabase.channel('online-combatants');
+    await channel.track({
+      username: user.username,
+      department: user.department,
+      elo: user.elo,
+      status: status,
+      online_at: new Date().toISOString()
+    });
+  }, [user]);
+
   // Fetch leaderboard from Supabase and subscribe to changes
   useEffect(() => {
     if (!supabase) return;
@@ -87,7 +133,6 @@ export default function EduDuel() {
 
     fetchLeaderboard();
 
-    // Subscribe to real-time updates on the profiles table
     const channel = supabase
       .channel('schema-db-changes')
       .on(
@@ -115,7 +160,9 @@ export default function EduDuel() {
   const [matchResult, setMatchResult] = useState(null);
   const [matchmakingStep, setMatchmakingStep] = useState(0);
   const [battleId, setBattleId] = useState(null);
-  const [myRole, setMyRole] = useState(null); // 'A' or 'B'
+  const [myRole, setMyRole] = useState(null); 
+  const [onlineUsers, setOnlineUsers] = useState({});
+  const battleChannelRef = useRef(null);
 
   const timerRef = useRef(null);
   const qTimerRef = useRef(null);
@@ -224,7 +271,9 @@ export default function EduDuel() {
 
     setScreen("matchmaking");
     setMatchmakingStep(0);
-    // 1. Join the queue
+    // 1. Join the queue (with Presence update)
+    await updatePresence('searching');
+
     const { error: joinError } = await supabase
       .from('matchmaking_queue')
       .upsert({ 
@@ -372,6 +421,7 @@ export default function EduDuel() {
     setMyScore(0); setOppScore(0); setQIndex(0);
     setSelectedOpt(null); setFeedback(null);
     setTimeLeft(GAME_DURATION); setQTimeLeft(SPEED_BONUS_WINDOW + 5);
+    await updatePresence('battling');
     await loadQuestions(user.department);
     setScreen("battle");
   };
@@ -385,6 +435,8 @@ export default function EduDuel() {
       config: { broadcast: { self: false } }
     });
 
+    battleChannelRef.current = channel;
+
     channel
       .on('broadcast', { event: 'score_update' }, (payload) => {
         console.log("Broadcast received:", payload);
@@ -396,7 +448,10 @@ export default function EduDuel() {
         console.log("Broadcast status:", status);
       });
 
-    return () => supabase.removeChannel(channel);
+    return () => {
+      supabase.removeChannel(channel);
+      battleChannelRef.current = null;
+    };
   }, [screen, battleId, myRole]);
 
   useEffect(() => {
@@ -446,9 +501,9 @@ export default function EduDuel() {
       setFeedback({ type: "correct", bonus: speedBonus, pts });
 
       // Sync score via Real-time Broadcast (Fastest)
-      if (supabase && battleId) {
+      if (supabase && battleId && battleChannelRef.current) {
         console.log(`Broadcasting score for Player ${myRole}: ${newScore}`);
-        supabase.channel(`battle-${battleId}`).send({
+        battleChannelRef.current.send({
           type: 'broadcast',
           event: 'score_update',
           payload: { role: myRole, score: newScore }
@@ -471,6 +526,9 @@ export default function EduDuel() {
     clearInterval(timerRef.current);
     clearInterval(qTimerRef.current);
     setScreen("result");
+    
+    // Update presence back to idle
+    updatePresence('idle');
     setMyScore(ms => {
       setOppScore(os => {
         const won = ms > os;
@@ -562,6 +620,40 @@ export default function EduDuel() {
             <button className="btn btn-ghost" onClick={()=>{setUser(null);setScreen("login");}}>Logout</button>
           </div>
           <div className="panel">
+            <div className="section-title">
+              <div className="pulse-dot"></div>
+              ONLINE COMBATANTS ({Object.keys(onlineUsers).length})
+            </div>
+            <div className="leaderboard-list" style={{maxHeight: 300, overflowY: 'auto'}}>
+              {Object.values(onlineUsers).map((u, i) => {
+                const isMe = u.username === user.username;
+                const statusColor = u.status === 'searching' ? 'var(--accent3)' : u.status === 'battling' ? 'var(--accent2)' : 'var(--muted)';
+                return (
+                  <div key={i} className="leaderboard-row" style={{opacity: 1, padding: '12px 0', borderBottom: '1px solid var(--border)'}}>
+                    <div className="rank-num">
+                      <div className="pulse-dot" style={{background: statusColor, boxShadow: `0 0 8px ${statusColor}`, animation: u.status === 'searching' ? 'pulseDot 1s ease-in-out infinite' : 'none'}} />
+                    </div>
+                    <div className="p-info">
+                      <div style={{fontWeight:700,fontSize:"0.9rem",color: isMe ? 'var(--accent)' : 'var(--text)'}}>
+                        {u.username} {isMe ? "(you)" : ""}
+                      </div>
+                      <div style={{fontSize:"0.7rem",color:"var(--muted)", display: 'flex', alignItems: 'center', gap: 6}}>
+                        {u.department} · <span style={{color: statusColor, fontWeight: 700, fontSize: '0.65rem'}}>{u.status.toUpperCase()}</span>
+                      </div>
+                    </div>
+                    <div style={{textAlign: 'right'}}>
+                      <div style={{fontFamily:"Orbitron",fontWeight:700,fontSize:"0.8rem",color:"var(--accent)"}}>{u.elo}</div>
+                      {u.status === 'searching' && !isMe && (
+                        <button className="btn btn-primary" style={{padding: '4px 8px', fontSize: '0.6rem', marginTop: 4, height: 'auto'}} onClick={startMatchmaking}>JOIN</button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="panel">
             <div className="section-title">Global Leaderboard</div>
             {leaderboard.map((p,i) => {
               const tier = getTier(p.elo);
@@ -602,24 +694,48 @@ export default function EduDuel() {
 
   if (screen === "matchmaking") {
     const steps = ["Scanning global queue...","Analyzing ELO brackets...","Opponent found!","Loading arena..."];
+    const seekers = Object.values(onlineUsers).filter(u => u.status === 'searching' && u.username !== user.username);
+    
     return (
       <div className="app">
         <div className="screen">
-          <div className="panel" style={{textAlign:"center",maxWidth:400,width:"100%"}}>
-            <div className="section-title" style={{justifyContent:"center"}}>Matchmaking</div>
-            <div className="radar"><span style={{fontSize:"1.5rem"}}>🎯</span></div>
-            {steps.map((s,i)=>(
-              <div key={i} style={{padding:"10px 16px",margin:"6px 0",borderRadius:6,background:matchmakingStep>i?"rgba(0,212,255,0.1)":"transparent",border:`1px solid ${matchmakingStep>i?"var(--accent)":"var(--border)"}`,color:matchmakingStep>i?"var(--accent)":"var(--muted)",fontFamily:"Share Tech Mono",fontSize:"0.8rem",letterSpacing:"0.15em",transition:"all 0.3s",display:"flex",alignItems:"center",gap:10}}>
-                {matchmakingStep>i?"✓":matchmakingStep===i?"›":"○"} {s}
-              </div>
-            ))}
-            {opponent && matchmakingStep >= 3 && (
-              <div style={{marginTop:20,padding:16,background:"rgba(0,255,157,0.08)",border:"1px solid var(--accent3)",borderRadius:8}}>
-                <div style={{color:"var(--accent3)",fontFamily:"Share Tech Mono",fontSize:"0.7rem",letterSpacing:"0.2em",marginBottom:8}}>OPPONENT LOCKED</div>
-                <div style={{fontFamily:"Orbitron",fontWeight:700,fontSize:"1.1rem"}}>{opponent.username}</div>
-                <div style={{color:"var(--muted)",fontSize:"0.85rem"}}>{opponent.department} · ELO {opponent.elo}</div>
-              </div>
-            )}
+          <div style={{display:"flex",gap:24,maxWidth:900,width:"100%",alignItems:"flex-start"}}>
+            <div className="panel" style={{textAlign:"center",flex:1}}>
+              <div className="section-title" style={{justifyContent:"center"}}>Matchmaking</div>
+              <div className="radar"><span style={{fontSize:"1.5rem"}}>🎯</span></div>
+              {steps.map((s,i)=>(
+                <div key={i} style={{padding:"10px 16px",margin:"6px 0",borderRadius:6,background:matchmakingStep>i?"rgba(0,212,255,0.1)":"transparent",border:`1px solid ${matchmakingStep>i?"var(--accent)":"var(--border)"}`,color:matchmakingStep>i?"var(--accent)":"var(--muted)",fontFamily:"Share Tech Mono",fontSize:"0.8rem",letterSpacing:"0.15em",transition:"all 0.3s",display:"flex",alignItems:"center",gap:10}}>
+                  {matchmakingStep>i?"✓":matchmakingStep===i?"›":"○"} {s}
+                </div>
+              ))}
+              {opponent && matchmakingStep >= 3 && (
+                <div style={{marginTop:20,padding:16,background:"rgba(0,255,157,0.08)",border:"1px solid var(--accent3)",borderRadius:8}}>
+                  <div style={{color:"var(--accent3)",fontFamily:"Share Tech Mono",fontSize:"0.7rem",letterSpacing:"0.2em",marginBottom:8}}>OPPONENT LOCKED</div>
+                  <div style={{fontFamily:"Orbitron",fontWeight:700,fontSize:"1.1rem"}}>{opponent.username}</div>
+                  <div style={{color:"var(--muted)",fontSize:"0.85rem"}}>{opponent.department} · ELO {opponent.elo}</div>
+                </div>
+              )}
+            </div>
+            
+            <div className="panel" style={{width:300}}>
+              <div className="section-title">Active Seekers</div>
+              {seekers.length === 0 ? (
+                <div style={{color:"var(--muted)",fontSize:"0.8rem",textAlign:"center",padding:"20px 0"}}>Waiting for more players...</div>
+              ) : (
+                <div className="leaderboard-list">
+                  {seekers.map((u,i) => (
+                    <div key={i} className="leaderboard-row" style={{borderBottom:"1px solid var(--border)"}}>
+                      <div className="pulse-dot" style={{width:6,height:6}}/>
+                      <div>
+                        <div style={{fontWeight:700,fontSize:"0.85rem"}}>{u.username}</div>
+                        <div style={{fontSize:"0.7rem",color:"var(--muted)"}}>{u.department}</div>
+                      </div>
+                      <div style={{fontFamily:"Orbitron",fontSize:"0.75rem",color:"var(--accent)"}}>{u.elo}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
