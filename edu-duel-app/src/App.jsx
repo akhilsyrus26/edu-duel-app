@@ -339,6 +339,20 @@ export default function EduDuel() {
 
     // 3. Try to find someone else already searching
     const findMatch = async () => {
+      // SELF-CHECK: See if someone else matched ME first
+      const { data: me } = await supabase
+        .from('matchmaking_queue')
+        .select('*')
+        .eq('username', user.username)
+        .single();
+      
+      if (me && me.status === 'matched' && me.matched_with) {
+        console.log("[MATCH] I was matched by:", me.matched_with);
+        if (matchmakingRef.current) clearInterval(matchmakingRef.current);
+        fetchOpponentAndStart(me.matched_with, me.battle_id);
+        return true;
+      }
+
       const { data: matches } = await supabase
         .from('matchmaking_queue')
         .select('*')
@@ -391,8 +405,11 @@ export default function EduDuel() {
               .update({ status: 'matched', matched_with: user.username, battle_id: battle.id })
               .eq('username', opponentData.username);
 
-            // Clean up our own queue entry immediately
-            await supabase.from('matchmaking_queue').delete().eq('username', user.username);
+            // Update OURSELVES to matched too, so Player B can see us if they check
+            await supabase
+              .from('matchmaking_queue')
+              .update({ status: 'matched', matched_with: opponentData.username, battle_id: battle.id })
+              .eq('username', user.username);
             
             setMyRole('A');
             setBattleId(battle.id);
@@ -403,6 +420,9 @@ export default function EduDuel() {
           clearInterval(matchmakingRef.current);
           matchmakingRef.current = null;
         }
+        // Cleanup queue entries for BOTH players after a delay
+        supabase.from('matchmaking_queue').delete().eq('username', user.username).then();
+        
         supabase.removeChannel(channel);
         startBattle(battleQuestions); // Pass shared questions
       }, 1000);
