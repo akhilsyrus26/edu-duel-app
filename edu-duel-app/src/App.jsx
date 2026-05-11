@@ -12,8 +12,8 @@ const TIERS = [
   { name: "Superconductor",min: 2001, max: 9999, color: "#f39c12", icon: "⚡" },
 ];
 
-const GAME_DURATION = 7 * 60; // 420 seconds
-const SPEED_BONUS_WINDOW = 10;
+const GAME_DURATION = 15 * 60; // Max match time
+const Q_TIMER_DURATION = 20; // 20 seconds per question
 
 const DEPARTMENTS = ["EEE","CSE","ME","CE","ECE","BBA","ETE","Physics","Chemistry","Math"];
 
@@ -84,6 +84,8 @@ export default function EduDuel() {
   const [myRole, setMyRole] = useState(null); 
   const [onlineUsers, setOnlineUsers] = useState({});
   const [forfeit, setForfeit] = useState(false);
+  const [oppHasAnswered, setOppHasAnswered] = useState(false);
+  const [waitingForNext, setWaitingForNext] = useState(false);
 
   const battleChannelRef = useRef(null);
   const presenceChannelRef = useRef(null);
@@ -461,7 +463,8 @@ export default function EduDuel() {
   const startBattle = async (customQuestions = null) => {
     setMyScore(0); setOppScore(0); setQIndex(0);
     setSelectedOpt(null); setFeedback(null);
-    setTimeLeft(GAME_DURATION); setQTimeLeft(SPEED_BONUS_WINDOW + 5);
+    setOppHasAnswered(false); setWaitingForNext(false);
+    setTimeLeft(GAME_DURATION); setQTimeLeft(Q_TIMER_DURATION);
     await updatePresence('battling');
     if (customQuestions) {
       setQuestions(customQuestions);
@@ -488,6 +491,12 @@ export default function EduDuel() {
         const data = payload.payload;
         if (data && data.role !== myRole) {
           setOppScore(data.score);
+          setOppHasAnswered(true);
+        }
+      })
+      .on('broadcast', { event: 'next_question' }, (payload) => {
+        if (payload.payload.index > qIndex) {
+          handleNextQuestionSync(payload.payload.index);
         }
       })
       .on('broadcast', { event: 'player_forfeit' }, (payload) => {
@@ -531,13 +540,19 @@ export default function EduDuel() {
   }, [screen]);
 
   useEffect(() => {
-    if (screen !== "battle" || selectedOpt !== null) return;
-    setQTimeLeft(SPEED_BONUS_WINDOW + 5);
+    if (screen !== "battle" || selectedOpt !== null || waitingForNext) return;
+    setQTimeLeft(Q_TIMER_DURATION);
     qTimerRef.current = setInterval(() => {
-      setQTimeLeft(t => Math.max(0, t-1));
+      setQTimeLeft(t => {
+        if (t <= 1) {
+          handleAnswer(-1); // Auto-fail on timeout
+          return 0;
+        }
+        return t - 1;
+      });
     }, 1000);
     return () => clearInterval(qTimerRef.current);
-  }, [screen, qIndex, selectedOpt]);
+  }, [screen, qIndex, selectedOpt, waitingForNext]);
 
   useEffect(() => {
     if (screen !== "battle" || !questions.length || (opponent && !opponent.is_bot)) return;
@@ -550,44 +565,74 @@ export default function EduDuel() {
   }, [screen, qIndex, questions]);
 
   const handleAnswer = (idx) => {
-    if (selectedOpt !== null) return;
+    if (selectedOpt !== null || waitingForNext) return;
     clearInterval(qTimerRef.current);
     setSelectedOpt(idx);
     const q = questions[qIndex];
-    const correct = idx === q.answer;
-    const speedBonus = qTimeLeft > (SPEED_BONUS_WINDOW + 5 - SPEED_BONUS_WINDOW);
-    const isPlayerA = myRole === 'A';
-    const scoreField = isPlayerA ? 'score_a' : 'score_b';
+    const correct = idx === q?.answer;
+    const pts = correct ? 10 + (qTimeLeft > 10 ? 5 : 0) : 0;
+    const newScore = myScore + pts;
     
     if (correct) {
-      const pts = 10 + (speedBonus ? 5 : 0);
-      const newScore = myScore + pts;
       setMyScore(newScore);
-      setFeedback({ type: "correct", bonus: speedBonus, pts });
-
-      // Sync score via Real-time Broadcast (Fastest)
-      if (supabase && battleId && battleChannelRef.current) {
-        console.log(`[BATTLE] Sending score update for ${myRole}: ${newScore}`);
-        battleChannelRef.current.send({
-          type: 'broadcast',
-          event: 'score_update',
-          payload: { role: myRole, score: newScore }
-        });
-        
-        // Also update DB for persistence (in background)
-        console.log(`[BATTLE] Updating DB score field ${scoreField} to ${newScore}`);
-        supabase.from('battles').update({ [scoreField]: newScore }).eq('id', battleId).then(({error}) => {
-          if (error) console.error("[BATTLE] DB Update Error:", error);
-        });
-      }
+      setFeedback({ type: "correct", pts });
     } else {
-      setFeedback({ type: "incorrect", bonus: false, pts: 0 });
+      setFeedback({ type: "incorrect", pts: 0 });
     }
-    clearTimeout(feedbackRef.current);
-    feedbackRef.current = setTimeout(() => {
-      setFeedback(null); setSelectedOpt(null);
-      setQIndex(i => (i + 1 >= questions.length ? 0 : i + 1));
-    }, 1400);
+
+    setWaitingForNext(true);
+
+    // Sync score and state
+    if (supabase && battleId && battleChannelRef.current) {
+      battleChannelRef.current.send({
+        type: 'broadcast',
+        event: 'score_update',
+        payload: { role: myRole, score: newScore, answered: true }
+      });
+      
+      const scoreField = myRole === 'A' ? 'score_a' : 'score_b';
+      const answeredField = myRole === 'A' ? 'player_a_answered' : 'player_b_answered';
+      supabase.from('battles').update({ [scoreField]: newScore, [answeredField]: true }).eq('id', battleId).then();
+    }
+  };
+
+  useEffect(() => {
+    if (waitingForNext && oppHasAnswered) {
+      const t = setTimeout(() => {
+        const nextIdx = qIndex + 1;
+        if (nextIdx >= questions.length) {
+          endGame();
+        } else {
+          handleNextQuestionSync(nextIdx);
+        }
+      }, 2000);
+      return () => clearTimeout(t);
+    }
+  }, [waitingForNext, oppHasAnswered, qIndex, questions]);
+
+  const handleNextQuestionSync = (idx) => {
+    setQIndex(idx);
+    setSelectedOpt(null);
+    setFeedback(null);
+    setOppHasAnswered(false);
+    setWaitingForNext(false);
+    setQTimeLeft(Q_TIMER_DURATION);
+    
+    if (myRole === 'A' && battleChannelRef.current) {
+      battleChannelRef.current.send({
+        type: 'broadcast',
+        event: 'next_question',
+        payload: { index: idx }
+      });
+    }
+    
+    if (supabase && battleId) {
+      supabase.from('battles').update({ 
+        player_a_answered: false, 
+        player_b_answered: false,
+        current_q_index: idx 
+      }).eq('id', battleId).then();
+    }
   };
 
   const endGame = useCallback(() => {
