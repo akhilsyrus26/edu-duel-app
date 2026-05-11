@@ -398,10 +398,14 @@ export default function EduDuel() {
             setBattleId(battle.id);
             setOpponent(opponentData);
             setMatchmakingStep(3);
-            setTimeout(() => {
-              supabase.removeChannel(channel);
-              startBattle(battleQuestions); // Pass shared questions
-            }, 1000);
+      setTimeout(() => {
+        if (matchmakingRef.current) {
+          clearInterval(matchmakingRef.current);
+          matchmakingRef.current = null;
+        }
+        supabase.removeChannel(channel);
+        startBattle(battleQuestions); // Pass shared questions
+      }, 1000);
             return true;
           }
         }
@@ -436,6 +440,10 @@ export default function EduDuel() {
       supabase.from('matchmaking_queue').delete().eq('username', user.username).then();
 
       setTimeout(() => {
+        if (matchmakingRef.current) {
+          clearInterval(matchmakingRef.current);
+          matchmakingRef.current = null;
+        }
         supabase.removeChannel(channel);
         startBattle(battleData?.question_data);
       }, 1000);
@@ -448,11 +456,15 @@ export default function EduDuel() {
       setMatchmakingStep(Math.min(2, Math.floor(attempts / 2)));
       
       const found = await findMatch();
-      if (found) {
+      // If we got matched elsewhere, or we are already in battle, STOP EVERYTHING
+      if (found || screen === "battle" || battleId) {
         clearInterval(interval);
         matchmakingRef.current = null;
-      } else if (attempts >= 30) {
-        // Fallback to bot after 30 seconds
+        return;
+      }
+      
+      if (attempts >= 30) { 
+    // Fallback to bot after 30 seconds
         clearInterval(interval);
         matchmakingRef.current = null;
         supabase.removeChannel(channel);
@@ -469,6 +481,12 @@ export default function EduDuel() {
   };
 
   const startBattle = async (customQuestions = null) => {
+    // FINAL SAFETY: Kill ALL matchmaking timers
+    if (matchmakingRef.current) {
+      clearInterval(matchmakingRef.current);
+      matchmakingRef.current = null;
+    }
+    
     setMyScore(0); setOppScore(0); setQIndex(0);
     setSelectedOpt(null); setFeedback(null);
     setOppHasAnswered(false); setWaitingForNext(false);
