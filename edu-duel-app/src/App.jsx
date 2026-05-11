@@ -176,9 +176,8 @@ export default function EduDuel() {
   const [opponent, setOpponent] = useState(null);
   const [matchResult, setMatchResult] = useState(null);
   const [matchmakingStep, setMatchmakingStep] = useState(0);
-  const [battleId, setBattleId] = useState(null);
-  const [myRole, setMyRole] = useState(null); 
   const [onlineUsers, setOnlineUsers] = useState({});
+  const [forfeit, setForfeit] = useState(false);
   const battleChannelRef = useRef(null);
   const presenceChannelRef = useRef(null);
 
@@ -187,11 +186,15 @@ export default function EduDuel() {
   const matchmakingRef = useRef(null);
   const feedbackRef = useRef(null);
 
-  const loadQuestions = async (dept) => {
+  const loadQuestions = async (dept, customQuestions = null) => {
+    if (customQuestions) {
+      setQuestions(customQuestions);
+      setLoadingQ(false);
+      return;
+    }
     setLoadingQ(true);
     try {
       if (supabase) {
-        // 1. Try to fetch questions for the EXACT department from Supabase
         const { data, error } = await supabase
           .from('questions')
           .select('*')
@@ -205,25 +208,28 @@ export default function EduDuel() {
             answer: q.answer,
             subject: q.subject
           }));
-          setQuestions(formatted.sort(() => Math.random() - 0.5));
+          const shuffled = formatted.sort(() => Math.random() - 0.5);
+          setQuestions(shuffled);
           setLoadingQ(false);
-          return;
+          return shuffled; // Return for the matchmaking logic
         }
       }
       
-      // 2. If no DB questions, try to find EXACT department matches in SAMPLE_QUESTIONS
       let filteredSamples = SAMPLE_QUESTIONS.filter(q => q.subject === dept);
-      
-      // 3. If still no matches (for a new department), use general STEM samples as a final fallback
       if (filteredSamples.length === 0) {
         filteredSamples = SAMPLE_QUESTIONS.filter(q => q.subject === "CSE" || q.subject === "EEE");
       }
 
-      setQuestions([...filteredSamples].sort(() => Math.random() - 0.5));
+      const shuffled = [...filteredSamples].sort(() => Math.random() - 0.5);
+      setQuestions(shuffled);
+      setLoadingQ(false);
+      return shuffled;
     } catch(e) {
-      setQuestions([...SAMPLE_QUESTIONS].sort(() => Math.random() - 0.5));
+      const shuffled = [...SAMPLE_QUESTIONS].sort(() => Math.random() - 0.5);
+      setQuestions(shuffled);
+      setLoadingQ(false);
+      return shuffled;
     }
-    setLoadingQ(false);
   };
 
   const handleLogin = async ({username, department, isNew}) => {
@@ -278,6 +284,7 @@ export default function EduDuel() {
     setQIndex(0);
     setBattleId(null);
     setMatchResult(null);
+    setForfeit(false);
 
     if (!supabase) {
       const bot = BOT_NAMES[Math.floor(Math.random()*BOT_NAMES.length)];
@@ -358,10 +365,17 @@ export default function EduDuel() {
           .eq('status', 'searching');
 
         if (!lockError) {
-          // Initialize the battle session
+          // Player A generates questions for BOTH players
+          const battleQuestions = await loadQuestions(user.department);
+
+          // Initialize the battle session with question data
           const { data: battle, error: battleError } = await supabase
             .from('battles')
-            .insert([{ player_a: user.username, player_b: opponentData.username }])
+            .insert([{ 
+              player_a: user.username, 
+              player_b: opponentData.username,
+              question_data: battleQuestions
+            }])
             .select()
             .single();
 
@@ -381,7 +395,7 @@ export default function EduDuel() {
             setMatchmakingStep(3);
             setTimeout(() => {
               supabase.removeChannel(channel);
-              startBattle();
+              startBattle(battleQuestions); // Pass shared questions
             }, 1000);
             return true;
           }
@@ -391,6 +405,13 @@ export default function EduDuel() {
     };
 
     const fetchOpponentAndStart = async (oppUsername, bId) => {
+      // Player B fetches questions from the battle record
+      const { data: battle } = await supabase
+        .from('battles')
+        .select('*')
+        .eq('id', bId)
+        .single();
+
       const { data: profile } = await supabase
         .from('profiles')
         .select('*')
@@ -406,7 +427,7 @@ export default function EduDuel() {
 
       setTimeout(() => {
         supabase.removeChannel(channel);
-        startBattle();
+        startBattle(battle?.question_data); // Use shared questions
       }, 1000);
     };
 
@@ -435,25 +456,26 @@ export default function EduDuel() {
     matchmakingRef.current = interval;
   };
 
-  const startBattle = async () => {
+  const startBattle = async (customQuestions = null) => {
     setMyScore(0); setOppScore(0); setQIndex(0);
     setSelectedOpt(null); setFeedback(null);
     setTimeLeft(GAME_DURATION); setQTimeLeft(SPEED_BONUS_WINDOW + 5);
     await updatePresence('battling');
-    await loadQuestions(user.department);
+    if (customQuestions) {
+      setQuestions(customQuestions);
+    } else {
+      await loadQuestions(user.department);
+    }
     setScreen("battle");
   };
 
-  // Sync scores in real-time during battle
+  // Sync scores and track forfeit
   useEffect(() => {
     if (!supabase || !battleId || screen !== "battle" || !myRole) return;
 
-    console.log(`[BATTLE] Initializing sync for battle: ${battleId} as Role: ${myRole}`);
-    
     const channel = supabase.channel(`battle-${battleId}`, {
       config: { 
         broadcast: { self: false },
-        postgres_changes: [{ event: 'UPDATE', schema: 'public', table: 'battles', filter: `id=eq.${battleId}` }]
       }
     });
 
@@ -461,32 +483,37 @@ export default function EduDuel() {
 
     channel
       .on('broadcast', { event: 'score_update' }, (payload) => {
-        console.log("[BATTLE] Broadcast score received:", payload);
         const data = payload.payload;
         if (data && data.role !== myRole) {
-          console.log(`[BATTLE] Updating Opponent score from broadcast: ${data.score}`);
           setOppScore(data.score);
         }
       })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'battles', filter: `id=eq.${battleId}` }, (payload) => {
-        console.log("[BATTLE] DB score update received:", payload.new);
-        const oppField = myRole === 'A' ? 'score_b' : 'score_a';
-        const newOppScore = payload.new[oppField];
-        if (newOppScore !== undefined) {
-          console.log(`[BATTLE] Updating Opponent score from DB: ${newOppScore}`);
-          setOppScore(newOppScore);
+      .on('broadcast', { event: 'player_forfeit' }, (payload) => {
+        if (payload.payload.username === opponent.username) {
+          setForfeit(true);
+          setTimeout(() => endGame(), 3000);
         }
       })
-      .subscribe((status) => {
-        console.log("[BATTLE] Subscription status:", status);
-      });
+      .subscribe();
+
+    // Secondary check: Presence forfeit detection
+    const checkForfeit = setInterval(() => {
+      if (opponent && !opponent.is_bot) {
+        const oppPresence = onlineUsers[opponent.username];
+        if (!oppPresence || oppPresence.status !== 'battling') {
+          setForfeit(true);
+          clearInterval(checkForfeit);
+          setTimeout(() => endGame(), 3000);
+        }
+      }
+    }, 5000);
 
     return () => {
-      console.log("[BATTLE] Cleaning up battle channel");
+      clearInterval(checkForfeit);
       supabase.removeChannel(channel);
       battleChannelRef.current = null;
     };
-  }, [screen, battleId, myRole]);
+  }, [screen, battleId, myRole, onlineUsers, opponent]);
 
   useEffect(() => {
     if (screen !== "battle") return;
@@ -788,6 +815,13 @@ export default function EduDuel() {
           {feedback?.type==="correct" ? `✓ CORRECT! +${feedback.pts} pts${feedback.bonus?" ⚡ SPEED BONUS":""}` : "✗ INCORRECT"}
         </div>
         <div className="screen" style={{paddingTop:24,paddingBottom:24}}>
+          {forfeit && (
+            <div style={{position:"absolute",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.85)",zIndex:1000,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",backdropFilter:"blur(8px)",animation:"fadeIn 0.5s"}}>
+              <div style={{fontSize:"3rem",marginBottom:20}}>🏳️</div>
+              <div style={{fontFamily:"Orbitron",fontSize:"1.5rem",color:"var(--accent2)",textAlign:"center",padding:"0 40px"}}>OPPONENT FORFEITED</div>
+              <div style={{color:"var(--muted)",marginTop:10}}>Ending match in your favor...</div>
+            </div>
+          )}
           <div className="battle-screen">
             <div className="battle-header">
               <div className="player-bar">
