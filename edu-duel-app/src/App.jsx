@@ -498,17 +498,19 @@ export default function EduDuel() {
       })
       .subscribe();
 
-    // Secondary check: Presence forfeit detection
+    // Secondary check: Presence forfeit detection (More relaxed)
     const checkForfeit = setInterval(() => {
-      if (opponent && !opponent.is_bot) {
+      if (opponent && !opponent.is_bot && !matchResult) {
         const oppPresence = onlineUsers[opponent.username];
-        if (!oppPresence || oppPresence.status !== 'battling') {
+        // Only forfeit if they are completely offline from the app
+        if (!oppPresence) {
+          console.log(`[BATTLE] Opponent ${opponent.username} not found in presence. Forfeit triggered.`);
           setForfeit(true);
           clearInterval(checkForfeit);
           setTimeout(() => endGame(), 3000);
         }
       }
-    }, 5000);
+    }, 10000); // Check every 10 seconds instead of 5
 
     return () => {
       clearInterval(checkForfeit);
