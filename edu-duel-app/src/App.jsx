@@ -409,29 +409,34 @@ export default function EduDuel() {
     };
 
     const fetchOpponentAndStart = async (oppUsername, bId) => {
-      // Player B fetches questions from the battle record
-      const { data: battle } = await supabase
-        .from('battles')
-        .select('*')
-        .eq('id', bId)
-        .single();
-
+      // 1. Fetch Profile
       const { data: profile } = await supabase
         .from('profiles')
         .select('*')
         .eq('username', oppUsername)
         .single();
       
-      setBattleId(bId);
       setOpponent(profile || { username: oppUsername, elo: 400, department: 'Unknown' });
+      setBattleId(bId);
       setMatchmakingStep(3);
-      
-      // Clean up our own queue entry
+
+      // 2. RETRY loop to wait for Player A's questions to save
+      let battleData = null;
+      for (let i = 0; i < 5; i++) {
+        const { data } = await supabase.from('battles').select('*').eq('id', bId).single();
+        if (data?.question_data) {
+          battleData = data;
+          break;
+        }
+        await new Promise(r => setTimeout(r, 1000));
+      }
+
+      // Clean up queue
       supabase.from('matchmaking_queue').delete().eq('username', user.username).then();
 
       setTimeout(() => {
         supabase.removeChannel(channel);
-        startBattle(battle?.question_data); // Use shared questions
+        startBattle(battleData?.question_data);
       }, 1000);
     };
 
@@ -495,14 +500,17 @@ export default function EduDuel() {
         }
       })
       .on('broadcast', { event: 'next_question' }, (payload) => {
-        if (payload.payload.index > qIndex) {
-          handleNextQuestionSync(payload.payload.index);
-        }
+        console.log("[BATTLE] Received next_question sync:", payload.payload.index);
+        handleNextQuestionSync(payload.payload.index);
       })
-      .on('broadcast', { event: 'player_forfeit' }, (payload) => {
-        if (payload.payload.username === opponent.username) {
-          setForfeit(true);
-          setTimeout(() => endGame(), 3000);
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'battles', filter: `id=eq.${battleId}` }, (payload) => {
+        // Backup sync from DB
+        const data = payload.new;
+        const oppField = myRole === 'A' ? 'score_b' : 'score_a';
+        setOppScore(data[oppField]);
+        
+        if (data.current_q_index > qIndex) {
+          handleNextQuestionSync(data.current_q_index);
         }
       })
       .subscribe();
@@ -597,18 +605,23 @@ export default function EduDuel() {
   };
 
   useEffect(() => {
+    // Both players move to next question ONLY when both answered
     if (waitingForNext && oppHasAnswered) {
+      console.log("[BATTLE] Both players answered. Waiting 2s...");
       const t = setTimeout(() => {
-        const nextIdx = qIndex + 1;
-        if (nextIdx >= questions.length) {
-          endGame();
-        } else {
-          handleNextQuestionSync(nextIdx);
+        if (myRole === 'A') {
+          // Player A triggers the next question for everyone
+          const nextIdx = qIndex + 1;
+          if (nextIdx >= questions.length) {
+            endGame();
+          } else {
+            handleNextQuestionSync(nextIdx);
+          }
         }
       }, 2000);
       return () => clearTimeout(t);
     }
-  }, [waitingForNext, oppHasAnswered, qIndex, questions]);
+  }, [waitingForNext, oppHasAnswered, qIndex, questions, myRole]);
 
   const handleNextQuestionSync = (idx) => {
     setQIndex(idx);
