@@ -68,6 +68,29 @@ export default function EduDuel() {
   const [screen, setScreen] = useState("login");
   const [user, setUser] = useState(null);
   const [leaderboard, setLeaderboard] = useState(INIT_LEADERBOARD);
+  const [questions, setQuestions] = useState([]);
+  const [qIndex, setQIndex] = useState(0);
+  const [myScore, setMyScore] = useState(0);
+  const [oppScore, setOppScore] = useState(0);
+  const [timeLeft, setTimeLeft] = useState(GAME_DURATION);
+  const [qTimeLeft, setQTimeLeft] = useState(SPEED_BONUS_WINDOW + 5);
+  const [selectedOpt, setSelectedOpt] = useState(null);
+  const [feedback, setFeedback] = useState(null);
+  const [loadingQ, setLoadingQ] = useState(false);
+  const [opponent, setOpponent] = useState(null);
+  const [matchResult, setMatchResult] = useState(null);
+  const [matchmakingStep, setMatchmakingStep] = useState(0);
+  const [battleId, setBattleId] = useState(null);
+  const [myRole, setMyRole] = useState(null); 
+  const [onlineUsers, setOnlineUsers] = useState({});
+  const [forfeit, setForfeit] = useState(false);
+
+  const battleChannelRef = useRef(null);
+  const presenceChannelRef = useRef(null);
+  const timerRef = useRef(null);
+  const qTimerRef = useRef(null);
+  const matchmakingRef = useRef(null);
+  const feedbackRef = useRef(null);
 
     // Track online presence
     useEffect(() => {
@@ -164,27 +187,6 @@ export default function EduDuel() {
     };
   }, []);
 
-  const [questions, setQuestions] = useState([]);
-  const [qIndex, setQIndex] = useState(0);
-  const [myScore, setMyScore] = useState(0);
-  const [oppScore, setOppScore] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(GAME_DURATION);
-  const [qTimeLeft, setQTimeLeft] = useState(SPEED_BONUS_WINDOW + 5);
-  const [selectedOpt, setSelectedOpt] = useState(null);
-  const [feedback, setFeedback] = useState(null);
-  const [loadingQ, setLoadingQ] = useState(false);
-  const [opponent, setOpponent] = useState(null);
-  const [matchResult, setMatchResult] = useState(null);
-  const [matchmakingStep, setMatchmakingStep] = useState(0);
-  const [onlineUsers, setOnlineUsers] = useState({});
-  const [forfeit, setForfeit] = useState(false);
-  const battleChannelRef = useRef(null);
-  const presenceChannelRef = useRef(null);
-
-  const timerRef = useRef(null);
-  const qTimerRef = useRef(null);
-  const matchmakingRef = useRef(null);
-  const feedbackRef = useRef(null);
 
   const loadQuestions = async (dept, customQuestions = null) => {
     if (customQuestions) {
