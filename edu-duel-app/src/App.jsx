@@ -69,44 +69,61 @@ export default function EduDuel() {
   const [user, setUser] = useState(null);
   const [leaderboard, setLeaderboard] = useState(INIT_LEADERBOARD);
 
-  // Track online presence
-  useEffect(() => {
-    if (!supabase || !user) return;
+    // Track online presence
+    useEffect(() => {
+      if (!supabase || !user) return;
 
-    const channel = supabase.channel('online-combatants', {
-      config: { presence: { key: user.username } }
-    });
-
-    channel
-      .on('presence', { event: 'sync' }, () => {
-        const state = channel.presenceState();
-        const simplified = {};
-        for (const key in state) {
-          simplified[key] = state[key][0];
-        }
-        setOnlineUsers(simplified);
-      })
-      .subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') {
-          await channel.track({
-            username: user.username,
-            department: user.department,
-            elo: user.elo,
-            status: 'idle',
-            online_at: new Date().toISOString()
-          });
-        }
+      console.log("Setting up Presence for:", user.username);
+      const channel = supabase.channel('online-combatants', {
+        config: { presence: { key: user.username } }
       });
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [user]);
+      presenceChannelRef.current = channel;
+
+      channel
+        .on('presence', { event: 'sync' }, () => {
+          const state = channel.presenceState();
+          console.log("Presence Sync event fired. State:", state);
+          const simplified = {};
+          for (const key in state) {
+            if (state[key][0]) simplified[key] = state[key][0];
+          }
+          setOnlineUsers(simplified);
+        })
+        .on('presence', { event: 'join' }, ({ key, newPresences }) => {
+          console.log('User joined presence:', key, newPresences);
+        })
+        .on('presence', { event: 'leave' }, ({ key, leftPresences }) => {
+          console.log('User left presence:', key, leftPresences);
+        })
+        .subscribe(async (status) => {
+          console.log("Presence subscription status:", status);
+          if (status === 'SUBSCRIBED') {
+            const trackStatus = await channel.track({
+              username: user.username,
+              department: user.department,
+              elo: user.elo,
+              status: 'idle',
+              online_at: new Date().toISOString()
+            });
+            console.log("Initial track result:", trackStatus);
+          }
+        });
+
+      return () => {
+        console.log("Cleaning up Presence channel");
+        supabase.removeChannel(channel);
+        presenceChannelRef.current = null;
+      };
+    }, [user]);
 
   const updatePresence = useCallback(async (status) => {
-    if (!supabase || !user) return;
-    const channel = supabase.channel('online-combatants');
-    await channel.track({
+    if (!supabase || !user || !presenceChannelRef.current) {
+      console.warn("Cannot update presence: Supabase or User or Channel missing", { user: !!user, channel: !!presenceChannelRef.current });
+      return;
+    }
+    console.log(`Updating presence status to: ${status}`);
+    await presenceChannelRef.current.track({
       username: user.username,
       department: user.department,
       elo: user.elo,
@@ -163,6 +180,7 @@ export default function EduDuel() {
   const [myRole, setMyRole] = useState(null); 
   const [onlineUsers, setOnlineUsers] = useState({});
   const battleChannelRef = useRef(null);
+  const presenceChannelRef = useRef(null);
 
   const timerRef = useRef(null);
   const qTimerRef = useRef(null);
@@ -426,29 +444,45 @@ export default function EduDuel() {
     setScreen("battle");
   };
 
-  // Sync scores in real-time during battle using Broadcast
+  // Sync scores in real-time during battle
   useEffect(() => {
     if (!supabase || !battleId || screen !== "battle" || !myRole) return;
 
-    console.log(`Joining broadcast channel battle-${battleId} as Player ${myRole}`);
+    console.log(`[BATTLE] Initializing sync for battle: ${battleId} as Role: ${myRole}`);
+    
     const channel = supabase.channel(`battle-${battleId}`, {
-      config: { broadcast: { self: false } }
+      config: { 
+        broadcast: { self: false },
+        postgres_changes: [{ event: 'UPDATE', schema: 'public', table: 'battles', filter: `id=eq.${battleId}` }]
+      }
     });
 
     battleChannelRef.current = channel;
 
     channel
       .on('broadcast', { event: 'score_update' }, (payload) => {
-        console.log("Broadcast received:", payload);
-        if (payload.payload.role !== myRole) {
-          setOppScore(payload.payload.score);
+        console.log("[BATTLE] Broadcast score received:", payload);
+        const data = payload.payload;
+        if (data && data.role !== myRole) {
+          console.log(`[BATTLE] Updating Opponent score from broadcast: ${data.score}`);
+          setOppScore(data.score);
+        }
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'battles', filter: `id=eq.${battleId}` }, (payload) => {
+        console.log("[BATTLE] DB score update received:", payload.new);
+        const oppField = myRole === 'A' ? 'score_b' : 'score_a';
+        const newOppScore = payload.new[oppField];
+        if (newOppScore !== undefined) {
+          console.log(`[BATTLE] Updating Opponent score from DB: ${newOppScore}`);
+          setOppScore(newOppScore);
         }
       })
       .subscribe((status) => {
-        console.log("Broadcast status:", status);
+        console.log("[BATTLE] Subscription status:", status);
       });
 
     return () => {
+      console.log("[BATTLE] Cleaning up battle channel");
       supabase.removeChannel(channel);
       battleChannelRef.current = null;
     };
@@ -502,7 +536,7 @@ export default function EduDuel() {
 
       // Sync score via Real-time Broadcast (Fastest)
       if (supabase && battleId && battleChannelRef.current) {
-        console.log(`Broadcasting score for Player ${myRole}: ${newScore}`);
+        console.log(`[BATTLE] Sending score update for ${myRole}: ${newScore}`);
         battleChannelRef.current.send({
           type: 'broadcast',
           event: 'score_update',
@@ -510,7 +544,10 @@ export default function EduDuel() {
         });
         
         // Also update DB for persistence (in background)
-        supabase.from('battles').update({ [scoreField]: newScore }).eq('id', battleId).then();
+        console.log(`[BATTLE] Updating DB score field ${scoreField} to ${newScore}`);
+        supabase.from('battles').update({ [scoreField]: newScore }).eq('id', battleId).then(({error}) => {
+          if (error) console.error("[BATTLE] DB Update Error:", error);
+        });
       }
     } else {
       setFeedback({ type: "incorrect", bonus: false, pts: 0 });
