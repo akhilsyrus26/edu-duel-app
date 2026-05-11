@@ -515,19 +515,22 @@ export default function EduDuel() {
       })
       .subscribe();
 
-    // Secondary check: Presence forfeit detection (More relaxed)
+    // Presence forfeit detection (Re-enabled with status check)
     const checkForfeit = setInterval(() => {
       if (opponent && !opponent.is_bot && !matchResult) {
         const oppPresence = onlineUsers[opponent.username];
-        // Only forfeit if they are completely offline from the app
-        if (!oppPresence) {
-          console.log(`[BATTLE] Opponent ${opponent.username} not found in presence. Forfeit triggered.`);
+        
+        // Trigger forfeit if:
+        // 1. They are completely offline
+        // 2. They are back in the lobby ('idle' or 'searching') while I am still battling them
+        if (!oppPresence || (oppPresence.status !== 'battling')) {
+          console.log(`[BATTLE] Opponent ${opponent.username} left battle. Status: ${oppPresence?.status}. Forfeit triggered.`);
           setForfeit(true);
           clearInterval(checkForfeit);
           setTimeout(() => endGame(), 3000);
         }
       }
-    }, 10000); // Check every 10 seconds instead of 5
+    }, 10000);
 
     return () => {
       clearInterval(checkForfeit);
@@ -606,22 +609,29 @@ export default function EduDuel() {
 
   useEffect(() => {
     // Both players move to next question ONLY when both answered
-    if (waitingForNext && oppHasAnswered) {
-      console.log("[BATTLE] Both players answered. Waiting 2s...");
-      const t = setTimeout(() => {
-        if (myRole === 'A') {
-          // Player A triggers the next question for everyone
-          const nextIdx = qIndex + 1;
-          if (nextIdx >= questions.length) {
-            endGame();
-          } else {
-            handleNextQuestionSync(nextIdx);
+    if (waitingForNext) {
+      // If opponent answered, move in 2s
+      if (oppHasAnswered) {
+        const t = setTimeout(() => {
+          if (myRole === 'A') {
+            const nextIdx = qIndex + 1;
+            nextIdx >= questions.length ? endGame() : handleNextQuestionSync(nextIdx);
           }
-        }
-      }, 2000);
-      return () => clearTimeout(t);
+        }, 2000);
+        return () => clearTimeout(t);
+      }
+      
+      // SAFETY VALVE: If timer is 0 and we've waited 8s without opponent answering, move anyway
+      if (qTimeLeft <= 0) {
+        const t = setTimeout(() => {
+          console.log("[BATTLE] Safety Valve: Opponent unresponsive, skipping...");
+          const nextIdx = qIndex + 1;
+          nextIdx >= questions.length ? endGame() : handleNextQuestionSync(nextIdx);
+        }, 8000);
+        return () => clearTimeout(t);
+      }
     }
-  }, [waitingForNext, oppHasAnswered, qIndex, questions, myRole]);
+  }, [waitingForNext, oppHasAnswered, qIndex, questions, myRole, qTimeLeft]);
 
   const handleNextQuestionSync = (idx) => {
     setQIndex(idx);
