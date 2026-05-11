@@ -328,7 +328,8 @@ export default function EduDuel() {
         { event: 'UPDATE', schema: 'public', table: 'matchmaking_queue', filter: `username=eq.${user.username}` },
         (payload) => {
           if (payload.new.status === 'matched') {
-            // We were matched! We are Player B
+            // KILL THE BOT TIMER IMMEDIATELY
+            if (matchmakingRef.current) clearInterval(matchmakingRef.current);
             setMyRole('B');
             fetchOpponentAndStart(payload.new.matched_with, payload.new.battle_id);
           }
@@ -449,9 +450,11 @@ export default function EduDuel() {
       const found = await findMatch();
       if (found) {
         clearInterval(interval);
-      } else if (attempts >= 10) {
-        // Fallback to bot after ~10 seconds
+        matchmakingRef.current = null;
+      } else if (attempts >= 30) {
+        // Fallback to bot after 30 seconds
         clearInterval(interval);
+        matchmakingRef.current = null;
         supabase.removeChannel(channel);
         const bot = BOT_NAMES[Math.floor(Math.random()*BOT_NAMES.length)];
         setOpponent({ username: bot, elo: user.elo + 50, department: user.department, is_bot: true });
