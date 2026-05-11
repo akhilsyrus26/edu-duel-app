@@ -73,7 +73,7 @@ export default function EduDuel() {
   const [myScore, setMyScore] = useState(0);
   const [oppScore, setOppScore] = useState(0);
   const [timeLeft, setTimeLeft] = useState(GAME_DURATION);
-  const [qTimeLeft, setQTimeLeft] = useState(SPEED_BONUS_WINDOW + 5);
+  const [qTimeLeft, setQTimeLeft] = useState(Q_TIMER_DURATION);
   const [selectedOpt, setSelectedOpt] = useState(null);
   const [feedback, setFeedback] = useState(null);
   const [loadingQ, setLoadingQ] = useState(false);
@@ -916,9 +916,9 @@ export default function EduDuel() {
                   <span className="q-number">Q{qIndex+1} OF {questions.length}</span>
                 </div>
                 <div className="q-text">{q.q}</div>
-                <div className="speed-bar-track"><div className="speed-bar-fill" style={{width:`${(qTimeLeft/(SPEED_BONUS_WINDOW+5))*100}%`}}/></div>
+                <div className="speed-bar-track"><div className="speed-bar-fill" style={{width:`${(qTimeLeft/Q_TIMER_DURATION)*100}%`}}/></div>
                 <div style={{fontFamily:"Share Tech Mono",fontSize:"0.6rem",color:"var(--muted)",letterSpacing:"0.2em",marginTop:4,marginBottom:16}}>
-                  {qTimeLeft>SPEED_BONUS_WINDOW?`⚡ SPEED BONUS ACTIVE — ${qTimeLeft-SPEED_BONUS_WINDOW}s`:"SPEED BONUS EXPIRED"}
+                  {qTimeLeft > 10 ? `⚡ SPEED BONUS ACTIVE — ${qTimeLeft - 10}s` : "SPEED BONUS EXPIRED"}
                 </div>
                 <div className="options-grid">
                   {q.options.map((opt,i)=>{
