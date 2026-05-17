@@ -572,25 +572,35 @@ export default function EduDuel() {
       })
       .subscribe();
 
-    // Presence forfeit detection (Re-enabled with status check)
+    // Robust Presence Forfeit Detection with Grace Period
+    let disconnectTimer = null;
     const checkForfeit = setInterval(() => {
       if (opponent && !opponent.is_bot && !matchResult) {
         const oppPresence = onlineUsers[opponent.username];
         
-        // Trigger forfeit if:
-        // 1. They are completely offline
-        // 2. They are back in the lobby ('idle' or 'searching') while I am still battling them
         if (!oppPresence || (oppPresence.status !== 'battling')) {
-          console.log(`[BATTLE] Opponent ${opponent.username} left battle. Status: ${oppPresence?.status}. Forfeit triggered.`);
-          setForfeit(true);
-          clearInterval(checkForfeit);
-          setTimeout(() => endGame(), 3000);
+          if (!disconnectTimer) {
+            console.log(`[BATTLE] Opponent ${opponent.username} missing or not battling. Starting 15s grace period...`);
+            disconnectTimer = setTimeout(() => {
+              console.log(`[BATTLE] Grace period expired. Forfeit triggered.`);
+              setForfeit(true);
+              setTimeout(() => endGame(), 3000);
+            }, 15000); // 15 second grace period to allow for reconnects
+          }
+        } else {
+          // Opponent is present and battling. Cancel any pending forfeit.
+          if (disconnectTimer) {
+            console.log(`[BATTLE] Opponent ${opponent.username} reconnected. Cancelling forfeit.`);
+            clearTimeout(disconnectTimer);
+            disconnectTimer = null;
+          }
         }
       }
-    }, 15000);
+    }, 3000); // Check frequently
 
     return () => {
       clearInterval(checkForfeit);
+      if (disconnectTimer) clearTimeout(disconnectTimer);
       supabase.removeChannel(channel);
       battleChannelRef.current = null;
     };
