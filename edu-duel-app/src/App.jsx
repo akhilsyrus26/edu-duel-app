@@ -91,6 +91,11 @@ export default function EduDuel() {
   const qTimerRef = useRef(null);
   const matchmakingRef = useRef(null);
   const feedbackRef = useRef(null);
+  const screenRef = useRef(screen);
+
+  useEffect(() => {
+    screenRef.current = screen;
+  }, [screen]);
 
     // Track online presence
     useEffect(() => {
@@ -122,11 +127,15 @@ export default function EduDuel() {
         .subscribe(async (status) => {
           console.log("Presence subscription status:", status);
           if (status === 'SUBSCRIBED') {
+            let currentStatus = 'idle';
+            if (screenRef.current === 'matchmaking') currentStatus = 'searching';
+            if (screenRef.current === 'battle') currentStatus = 'battling';
+            
             const trackStatus = await channel.track({
               username: user.username,
               department: user.department,
               elo: user.elo,
-              status: 'idle',
+              status: currentStatus,
               online_at: new Date().toISOString()
             });
             console.log("Initial track result:", trackStatus);
