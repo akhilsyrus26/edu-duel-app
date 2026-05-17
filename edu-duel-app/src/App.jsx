@@ -581,16 +581,7 @@ export default function EduDuel() {
     };
   }, [screen, battleId, myRole]);
 
-  // Absolute Match Timeout: Max 5 questions * 21.5s = 107.5s.
-  // 120s gives a safe buffer. If the match isn't done by then, force end.
-  useEffect(() => {
-    if (screen !== "battle") return;
-    const maxMatchTime = setTimeout(() => {
-      console.log("[BATTLE] Absolute match timeout reached. Forcing endgame.");
-      endGame();
-    }, 120000); // 120 seconds
-    return () => clearTimeout(maxMatchTime);
-  }, [screen, endGame]);
+
 
 
   useEffect(() => {
@@ -722,6 +713,17 @@ export default function EduDuel() {
       return ms;
     });
   }, [user, opponent]);
+
+  // Absolute Match Timeout: Max 5 questions * 21.5s = 107.5s.
+  // 120s gives a safe buffer. If the match isn't done by then, force end.
+  useEffect(() => {
+    if (screen !== "battle") return;
+    const maxMatchTime = setTimeout(() => {
+      console.log("[BATTLE] Absolute match timeout reached. Forcing endgame.");
+      endGame();
+    }, 120000); // 120 seconds
+    return () => clearTimeout(maxMatchTime);
+  }, [screen, endGame]);
 
   if (screen === "login") return (
     <div className="app">
