@@ -572,39 +572,26 @@ export default function EduDuel() {
       })
       .subscribe();
 
-    // Robust Presence Forfeit Detection with Grace Period
-    let disconnectTimer = null;
-    const checkForfeit = setInterval(() => {
-      if (opponent && !opponent.is_bot && !matchResult) {
-        const oppPresence = onlineUsers[opponent.username];
-        
-        if (!oppPresence || (oppPresence.status !== 'battling')) {
-          if (!disconnectTimer) {
-            console.log(`[BATTLE] Opponent ${opponent.username} missing or not battling. Starting 15s grace period...`);
-            disconnectTimer = setTimeout(() => {
-              console.log(`[BATTLE] Grace period expired. Forfeit triggered.`);
-              setForfeit(true);
-              setTimeout(() => endGame(), 3000);
-            }, 15000); // 15 second grace period to allow for reconnects
-          }
-        } else {
-          // Opponent is present and battling. Cancel any pending forfeit.
-          if (disconnectTimer) {
-            console.log(`[BATTLE] Opponent ${opponent.username} reconnected. Cancelling forfeit.`);
-            clearTimeout(disconnectTimer);
-            disconnectTimer = null;
-          }
-        }
-      }
-    }, 3000); // Check frequently
-
+    // We removed the flaky presence-based forfeit.
+    // The match is now strictly bounded by a 120-second absolute timeout.
+    
     return () => {
-      clearInterval(checkForfeit);
-      if (disconnectTimer) clearTimeout(disconnectTimer);
       supabase.removeChannel(channel);
       battleChannelRef.current = null;
     };
-  }, [screen, battleId, myRole, onlineUsers, opponent]);
+  }, [screen, battleId, myRole]);
+
+  // Absolute Match Timeout: Max 5 questions * 21.5s = 107.5s.
+  // 120s gives a safe buffer. If the match isn't done by then, force end.
+  useEffect(() => {
+    if (screen !== "battle") return;
+    const maxMatchTime = setTimeout(() => {
+      console.log("[BATTLE] Absolute match timeout reached. Forcing endgame.");
+      endGame();
+    }, 120000); // 120 seconds
+    return () => clearTimeout(maxMatchTime);
+  }, [screen, endGame]);
+
 
   useEffect(() => {
     if (screen !== "battle" || selectedOpt !== null || finishedMatch) return;
