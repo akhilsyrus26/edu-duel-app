@@ -72,7 +72,6 @@ export default function EduDuel() {
   const [qIndex, setQIndex] = useState(0);
   const [myScore, setMyScore] = useState(0);
   const [oppScore, setOppScore] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(GAME_DURATION);
   const [qTimeLeft, setQTimeLeft] = useState(Q_TIMER_DURATION);
   const [selectedOpt, setSelectedOpt] = useState(null);
   const [feedback, setFeedback] = useState(null);
@@ -84,12 +83,11 @@ export default function EduDuel() {
   const [myRole, setMyRole] = useState(null); 
   const [onlineUsers, setOnlineUsers] = useState({});
   const [forfeit, setForfeit] = useState(false);
-  const [oppHasAnswered, setOppHasAnswered] = useState(false);
-  const [waitingForNext, setWaitingForNext] = useState(false);
+  const [finishedMatch, setFinishedMatch] = useState(false);
+  const [oppFinished, setOppFinished] = useState(false);
 
   const battleChannelRef = useRef(null);
   const presenceChannelRef = useRef(null);
-  const timerRef = useRef(null);
   const qTimerRef = useRef(null);
   const matchmakingRef = useRef(null);
   const feedbackRef = useRef(null);
@@ -203,7 +201,7 @@ export default function EduDuel() {
           .from('questions')
           .select('*')
           .eq('subject', dept)
-          .limit(15);
+          .limit(5);
         
         if (!error && data && data.length > 0) {
           const formatted = data.map(q => ({
@@ -212,7 +210,7 @@ export default function EduDuel() {
             answer: q.answer,
             subject: q.subject
           }));
-          const shuffled = formatted.sort(() => Math.random() - 0.5);
+          const shuffled = formatted.sort(() => Math.random() - 0.5).slice(0, 5);
           setQuestions(shuffled);
           setLoadingQ(false);
           return shuffled; // Return for the matchmaking logic
@@ -224,12 +222,12 @@ export default function EduDuel() {
         filteredSamples = SAMPLE_QUESTIONS.filter(q => q.subject === "CSE" || q.subject === "EEE");
       }
 
-      const shuffled = [...filteredSamples].sort(() => Math.random() - 0.5);
+      const shuffled = [...filteredSamples].sort(() => Math.random() - 0.5).slice(0, 5);
       setQuestions(shuffled);
       setLoadingQ(false);
       return shuffled;
     } catch(e) {
-      const shuffled = [...SAMPLE_QUESTIONS].sort(() => Math.random() - 0.5);
+      const shuffled = [...SAMPLE_QUESTIONS].sort(() => Math.random() - 0.5).slice(0, 5);
       setQuestions(shuffled);
       setLoadingQ(false);
       return shuffled;
@@ -524,8 +522,8 @@ export default function EduDuel() {
     
     setMyScore(0); setOppScore(0); setQIndex(0);
     setSelectedOpt(null); setFeedback(null);
-    setOppHasAnswered(false); setWaitingForNext(false);
-    setTimeLeft(GAME_DURATION); setQTimeLeft(Q_TIMER_DURATION);
+    setFinishedMatch(false); setOppFinished(false);
+    setQTimeLeft(Q_TIMER_DURATION);
     await updatePresence('battling');
     if (customQuestions) {
       setQuestions(customQuestions);
@@ -552,22 +550,16 @@ export default function EduDuel() {
         const data = payload.payload;
         if (data && data.role !== myRole) {
           setOppScore(data.score);
-          setOppHasAnswered(true);
+          if (data.finished) {
+            setOppFinished(true);
+          }
         }
-      })
-      .on('broadcast', { event: 'next_question' }, (payload) => {
-        console.log("[BATTLE] Received next_question sync:", payload.payload.index);
-        handleNextQuestionSync(payload.payload.index);
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'battles', filter: `id=eq.${battleId}` }, (payload) => {
         // Backup sync from DB
         const data = payload.new;
         const oppField = myRole === 'A' ? 'score_b' : 'score_a';
         setOppScore(data[oppField]);
-        
-        if (data.current_q_index > qIndex) {
-          handleNextQuestionSync(data.current_q_index);
-        }
       })
       .subscribe();
 
@@ -596,18 +588,7 @@ export default function EduDuel() {
   }, [screen, battleId, myRole, onlineUsers, opponent]);
 
   useEffect(() => {
-    if (screen !== "battle") return;
-    timerRef.current = setInterval(() => {
-      setTimeLeft(t => {
-        if (t <= 1) { clearInterval(timerRef.current); endGame(); return 0; }
-        return t - 1;
-      });
-    }, 1000);
-    return () => clearInterval(timerRef.current);
-  }, [screen]);
-
-  useEffect(() => {
-    if (screen !== "battle" || selectedOpt !== null || waitingForNext) return;
+    if (screen !== "battle" || selectedOpt !== null || finishedMatch) return;
     setQTimeLeft(Q_TIMER_DURATION);
     qTimerRef.current = setInterval(() => {
       setQTimeLeft(t => {
@@ -619,20 +600,25 @@ export default function EduDuel() {
       });
     }, 1000);
     return () => clearInterval(qTimerRef.current);
-  }, [screen, qIndex, selectedOpt, waitingForNext]);
+  }, [screen, qIndex, selectedOpt, finishedMatch]);
 
   useEffect(() => {
+    // Bot logic for asynchronous mode
     if (screen !== "battle" || !questions.length || (opponent && !opponent.is_bot)) return;
-    const delay = 4000 + Math.random() * 8000;
+    const delay = 3000 + Math.random() * 5000;
     const t = setTimeout(() => {
       const correct = Math.random() > 0.4;
       if(correct) setOppScore(s => s + 10 + (Math.random()>0.5 ? 5 : 0));
+      // Simulate bot finishing eventually
+      if (qIndex >= questions.length - 1) {
+        setOppFinished(true);
+      }
     }, delay);
     return () => clearTimeout(t);
   }, [screen, qIndex, questions]);
 
   const handleAnswer = (idx) => {
-    if (selectedOpt !== null || waitingForNext) return;
+    if (selectedOpt !== null || finishedMatch) return;
     clearInterval(qTimerRef.current);
     setSelectedOpt(idx);
     const q = questions[qIndex];
@@ -647,75 +633,42 @@ export default function EduDuel() {
       setFeedback({ type: "incorrect", pts: 0 });
     }
 
-    setWaitingForNext(true);
+    const isDone = qIndex + 1 >= questions.length;
 
-    // Sync score and state
+    // Sync score and state asynchronously
     if (supabase && battleId && battleChannelRef.current) {
       battleChannelRef.current.send({
         type: 'broadcast',
         event: 'score_update',
-        payload: { role: myRole, score: newScore, answered: true }
+        payload: { role: myRole, score: newScore, finished: isDone }
       });
       
       const scoreField = myRole === 'A' ? 'score_a' : 'score_b';
-      const answeredField = myRole === 'A' ? 'player_a_answered' : 'player_b_answered';
-      supabase.from('battles').update({ [scoreField]: newScore, [answeredField]: true }).eq('id', battleId).then();
+      supabase.from('battles').update({ [scoreField]: newScore }).eq('id', battleId).then();
     }
+
+    // Wait 1.5s for feedback, then advance to next question OR finished state
+    setTimeout(() => {
+      if (isDone) {
+        setFinishedMatch(true);
+      } else {
+        setQIndex(qIndex + 1);
+        setSelectedOpt(null);
+        setFeedback(null);
+        setQTimeLeft(Q_TIMER_DURATION);
+      }
+    }, 1500);
   };
 
+  // Trigger endgame only when BOTH players have finished
   useEffect(() => {
-    // Both players move to next question ONLY when both answered
-    if (waitingForNext) {
-      // If opponent answered, move in 2s
-      if (oppHasAnswered) {
-        const t = setTimeout(() => {
-          if (myRole === 'A') {
-            const nextIdx = qIndex + 1;
-            nextIdx >= questions.length ? endGame() : handleNextQuestionSync(nextIdx);
-          }
-        }, 2000);
-        return () => clearTimeout(t);
-      }
-      
-      // SAFETY VALVE: If timer is 0 and we've waited 8s without opponent answering, move anyway
-      if (qTimeLeft <= 0) {
-        const t = setTimeout(() => {
-          console.log("[BATTLE] Safety Valve: Opponent unresponsive, skipping...");
-          const nextIdx = qIndex + 1;
-          nextIdx >= questions.length ? endGame() : handleNextQuestionSync(nextIdx);
-        }, 8000);
-        return () => clearTimeout(t);
-      }
+    if (finishedMatch && oppFinished) {
+      console.log("[BATTLE] Both players finished. Ending game.");
+      endGame();
     }
-  }, [waitingForNext, oppHasAnswered, qIndex, questions, myRole, qTimeLeft]);
-
-  const handleNextQuestionSync = (idx) => {
-    setQIndex(idx);
-    setSelectedOpt(null);
-    setFeedback(null);
-    setOppHasAnswered(false);
-    setWaitingForNext(false);
-    setQTimeLeft(Q_TIMER_DURATION);
-    
-    if (myRole === 'A' && battleChannelRef.current) {
-      battleChannelRef.current.send({
-        type: 'broadcast',
-        event: 'next_question',
-        payload: { index: idx }
-      });
-    }
-    
-    if (supabase && battleId) {
-      supabase.from('battles').update({ 
-        player_a_answered: false, 
-        player_b_answered: false,
-        current_q_index: idx 
-      }).eq('id', battleId).then();
-    }
-  };
+  }, [finishedMatch, oppFinished]);
 
   const endGame = useCallback(() => {
-    clearInterval(timerRef.current);
     clearInterval(qTimerRef.current);
     setScreen("result");
     
@@ -963,11 +916,9 @@ export default function EduDuel() {
                 <div className="score-display" style={{color:"var(--accent)"}}>{myScore}</div>
                 <div className="progress-track"><div className="progress-fill my-fill" style={{width:`${Math.min(100,(myScore/maxScore)*100)}%`}}/></div>
               </div>
-              <div className="timer-block">
+              <div className="timer-block" style={{justifyContent: 'center'}}>
                 <div style={{fontFamily:"Share Tech Mono",fontSize:"0.6rem",letterSpacing:"0.3em",color:"var(--muted)",marginBottom:4}}>⚡ DUEL</div>
-                <div className={`timer-value ${timeLeft<=60?"urgent":""}`}>{formatTime(timeLeft)}</div>
-                <div className="timer-label">REMAINING</div>
-                <div style={{fontSize:"0.7rem",color:"var(--muted)",marginTop:6,fontFamily:"Share Tech Mono"}}>Q {qIndex+1}/{questions.length}</div>
+                <div style={{fontSize:"1.5rem",color:"var(--accent)",marginTop:6,fontFamily:"Share Tech Mono"}}>Q {qIndex+1}/{questions.length}</div>
               </div>
               <div className="player-bar opponent">
                 <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,justifyContent:"flex-end"}}>
@@ -986,6 +937,20 @@ export default function EduDuel() {
                 <div className="ai-loading">
                   <div className="dot-anim"><span/><span/><span/></div>
                   GENERATING QUESTIONS VIA AI...
+                </div>
+              </div>
+            ) : finishedMatch ? (
+              <div className="panel" style={{textAlign: "center", padding: "40px 20px"}}>
+                <div className="ai-loading" style={{justifyContent: "center", marginBottom: 20}}>
+                  <div className="dot-anim"><span/><span/><span/></div>
+                  WAITING FOR OPPONENT TO FINISH...
+                </div>
+                <div style={{color:"var(--text)", fontSize: "1.2rem", fontFamily: "Orbitron", marginBottom: 10}}>
+                  Your Final Score: <span style={{color: "var(--accent)"}}>{myScore}</span>
+                </div>
+                <div style={{color:"var(--muted)", fontSize: "0.85rem"}}>
+                  The match will conclude when {opponent?.username} completes all questions.<br/>
+                  Please do not close this window.
                 </div>
               </div>
             ) : q ? (
