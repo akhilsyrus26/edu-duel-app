@@ -357,33 +357,43 @@ export default function EduDuel() {
         return true;
       }
 
-      const { data: matches } = await supabase
+      const { data: allMatches } = await supabase
         .from('matchmaking_queue')
         .select('*')
         .eq('status', 'searching')
         .neq('username', user.username)
-        .eq('department', user.department)
-        .order('created_at', { ascending: true })
-        .limit(1);
+        .limit(20);
 
-      let opponentData = matches?.[0];
+      let opponentData = null;
 
-      if (!opponentData) {
-        const { data: globalMatches } = await supabase
-          .from('matchmaking_queue')
-          .select('*')
-          .eq('status', 'searching')
-          .neq('username', user.username)
-          .gte('elo', user.elo - 300)
-          .lte('elo', user.elo + 300)
-          .limit(1);
-        opponentData = globalMatches?.[0];
+      if (allMatches && allMatches.length > 0) {
+        // Sort matches: Same department first, then closest ELO
+        allMatches.sort((a, b) => {
+          if (a.department === user.department && b.department !== user.department) return -1;
+          if (a.department !== user.department && b.department === user.department) return 1;
+          const diffA = Math.abs(a.elo - user.elo);
+          const diffB = Math.abs(b.elo - user.elo);
+          return diffA - diffB;
+        });
+
+        // Get the best ELO diff among the top candidates (who share the same department status)
+        const topDept = allMatches[0].department;
+        const closestEloDiff = Math.abs(allMatches[0].elo - user.elo);
+        
+        // Find all candidates who are within 100 ELO of the closest match, to randomize
+        const bestCandidates = allMatches.filter(m => 
+          (m.department === topDept || topDept !== user.department) && 
+          Math.abs(m.elo - user.elo) <= closestEloDiff + 100
+        );
+
+        // Pick one randomly from the best candidates
+        opponentData = bestCandidates[Math.floor(Math.random() * bestCandidates.length)];
       }
 
       if (opponentData) {
         const { error: lockError } = await supabase
           .from('matchmaking_queue')
-          .update({ status: 'matched', matched_with: user.username })
+          .update({ status: 'locking', matched_with: user.username })
           .eq('username', opponentData.username)
           .eq('status', 'searching');
 
@@ -403,7 +413,7 @@ export default function EduDuel() {
             .single();
 
           if (!battleError) {
-            // Update opponent first so they get the Battle ID
+            // Update opponent FIRST to 'matched' so they get the Battle ID and trigger their listener
             await supabase
               .from('matchmaking_queue')
               .update({ status: 'matched', matched_with: user.username, battle_id: battle.id })
