@@ -328,8 +328,9 @@ export default function EduDuel() {
         { event: 'UPDATE', schema: 'public', table: 'matchmaking_queue', filter: `username=eq.${user.username}` },
         (payload) => {
           if (payload.new.status === 'matched') {
-            // KILL THE BOT TIMER IMMEDIATELY
-            if (matchmakingRef.current) clearInterval(matchmakingRef.current);
+            if (!matchmakingRef.current) return; // Prevent double-trigger
+            clearInterval(matchmakingRef.current);
+            matchmakingRef.current = null;
             setMyRole('B');
             fetchOpponentAndStart(payload.new.matched_with, payload.new.battle_id);
           }
@@ -348,7 +349,10 @@ export default function EduDuel() {
       
       if (me && me.status === 'matched' && me.matched_with) {
         console.log("[MATCH] I was matched by:", me.matched_with);
-        if (matchmakingRef.current) clearInterval(matchmakingRef.current);
+        if (!matchmakingRef.current) return true; // Prevent double-trigger
+        clearInterval(matchmakingRef.current);
+        matchmakingRef.current = null;
+        setMyRole('B');
         fetchOpponentAndStart(me.matched_with, me.battle_id);
         return true;
       }
@@ -571,7 +575,7 @@ export default function EduDuel() {
           setTimeout(() => endGame(), 3000);
         }
       }
-    }, 10000);
+    }, 15000);
 
     return () => {
       clearInterval(checkForfeit);
