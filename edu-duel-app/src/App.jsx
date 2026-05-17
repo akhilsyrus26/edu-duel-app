@@ -391,13 +391,14 @@ export default function EduDuel() {
       }
 
       if (opponentData) {
-        const { error: lockError } = await supabase
+        const { data: lockData, error: lockError } = await supabase
           .from('matchmaking_queue')
           .update({ status: 'locking', matched_with: user.username })
           .eq('username', opponentData.username)
-          .eq('status', 'searching');
+          .eq('status', 'searching')
+          .select();
 
-        if (!lockError) {
+        if (!lockError && lockData && lockData.length > 0) {
           // Player A generates questions for BOTH players
           const battleQuestions = await loadQuestions(user.department);
 
